@@ -1,9 +1,11 @@
 import UIKit
+import Network
 
-class ViewController: UIViewController, URLSessionWebSocketDelegate {
+class ViewController: UIViewController {
     
     private let imageView = UIImageView()
-    private var webSocket: URLSessionWebSocketTask?
+    private var listener: NWListener?
+    private var connection: NWConnection?
     
     // Mouse tracking variables
     private var lastTouchPoint: CGPoint?
@@ -15,86 +17,86 @@ class ViewController: UIViewController, URLSessionWebSocketDelegate {
         
         imageView.frame = view.bounds
         imageView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        imageView.contentMode = .scaleToFill // Stretch to fill like osu! expects
+        imageView.contentMode = .scaleToFill
         view.addSubview(imageView)
         
-        // Enable multi-touch if needed, but for osu! one pencil is enough
         view.isMultipleTouchEnabled = false
         
-        connectWebSocket()
+        startWebSocketServer()
     }
     
     override var prefersStatusBarHidden: Bool { return true }
     override var prefersHomeIndicatorAutoHidden: Bool { return true }
     
-    // MARK: - Networking
+    // MARK: - Networking (iPad as Server)
     
-    private func connectWebSocket() {
-        // Connect to localhost (pymobiledevice3 forwards 8765 from PC to iPad over USB)
-        let url = URL(string: "ws://127.0.0.1:8765")!
-        let session = URLSession(configuration: .default, delegate: self, delegateQueue: OperationQueue())
-        webSocket = session.webSocketTask(with: url)
-        webSocket?.resume()
+    private func startWebSocketServer() {
+        let parameters = NWParameters.tcp
+        let wsOptions = NWProtocolWebSocket.Options()
+        wsOptions.autoReplyPing = true
+        parameters.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)
         
-        receiveMessage()
+        do {
+            listener = try NWListener(using: parameters, on: 8765)
+            listener?.newConnectionHandler = { [weak self] newConnection in
+                self?.connection = newConnection
+                newConnection.start(queue: .main)
+                self?.receiveMessage(on: newConnection)
+            }
+            listener?.start(queue: .main)
+            print("Server started on port 8765")
+        } catch {
+            print("Failed to start listener: \(error)")
+        }
     }
     
-    private func receiveMessage() {
-        webSocket?.receive { [weak self] result in
-            guard let self = self else { return }
-            
-            switch result {
-            case .success(let message):
-                switch message {
-                case .data(let data):
-                    // We received a JPEG frame
-                    if let image = UIImage(data: data) {
-                        DispatchQueue.main.async {
-                            self.imageView.image = image
+    private func receiveMessage(on connection: NWConnection) {
+        connection.receiveMessage { [weak self] completeContent, contentContext, isComplete, error in
+            if let data = completeContent, !data.isEmpty {
+                // Determine if it's binary (image) or text
+                if let wsMetadata = contentContext?.protocolMetadata(definition: NWProtocolWebSocket.definition) as? NWProtocolWebSocket.Metadata {
+                    if wsMetadata.opcode == .binary {
+                        if let image = UIImage(data: data) {
+                            DispatchQueue.main.async {
+                                self?.imageView.image = image
+                            }
                         }
                     }
-                case .string(_):
-                    break
-                @unknown default:
-                    break
                 }
-                
-                // Immediately queue next read
-                self.receiveMessage()
-                
-            case .failure(let error):
-                print("WebSocket disconnected: \(error)")
-                // Reconnect after 1 second
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                    self.connectWebSocket()
-                }
+            }
+            
+            if error == nil {
+                self?.receiveMessage(on: connection)
+            } else {
+                print("Connection closed")
+                self?.connection = nil
             }
         }
     }
     
     private func send(string: String) {
-        let message = URLSessionWebSocketTask.Message.string(string)
-        webSocket?.send(message) { error in
+        guard let connection = connection else { return }
+        let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
+        let context = NWConnection.ContentContext(identifier: "text", metadata: [metadata])
+        
+        connection.send(content: string.data(using: .utf8), contentContext: context, isComplete: true, completion: .contentProcessed({ error in
             if let error = error {
                 print("Send error: \(error)")
             }
-        }
+        }))
     }
     
-    // MARK: - Touch Handling (Apple Pencil & Finger)
+    // MARK: - Touch Handling
     
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard let touch = touches.first else { return }
         lastTouchPoint = touch.location(in: view)
-        
-        // Send left click down
         send(string: "1,1,0,0")
     }
     
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard let touch = touches.first, let last = lastTouchPoint else { return }
         
-        // Get all coalesced touches for 240Hz iPad Pro polling!
         let coalescedTouches = event?.coalescedTouches(for: touch) ?? [touch]
         
         var currentLast = last
@@ -120,7 +122,6 @@ class ViewController: UIViewController, URLSessionWebSocketDelegate {
     
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
         lastTouchPoint = nil
-        // Send left click up
         send(string: "1,2,0,0")
     }
     
