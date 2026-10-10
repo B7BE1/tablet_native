@@ -90,39 +90,30 @@ class ViewController: UIViewController {
     
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard let touch = touches.first else { return }
-        lastTouchPoint = touch.location(in: view)
-        send(string: "1,1,0,0")
+        let loc = touch.location(in: view)
+        let nx = loc.x / view.bounds.width
+        let ny = loc.y / view.bounds.height
+        send(string: "2,\(nx),\(ny),1") // 1 = touch down
     }
     
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard let touch = touches.first, let last = lastTouchPoint else { return }
-        
+        guard let touch = touches.first else { return }
         let coalescedTouches = event?.coalescedTouches(for: touch) ?? [touch]
-        
-        var currentLast = last
-        var accumulatedDx: CGFloat = 0
-        var accumulatedDy: CGFloat = 0
         
         for cTouch in coalescedTouches {
             let loc = cTouch.location(in: view)
-            accumulatedDx += (loc.x - currentLast.x) * sensitivity
-            accumulatedDy += (loc.y - currentLast.y) * sensitivity
-            currentLast = loc
-        }
-        
-        lastTouchPoint = currentLast
-        
-        let dx = Int(accumulatedDx)
-        let dy = Int(accumulatedDy)
-        
-        if dx != 0 || dy != 0 {
-            send(string: "1,0,\(dx),\(dy)")
+            let nx = loc.x / view.bounds.width
+            let ny = loc.y / view.bounds.height
+            send(string: "2,\(nx),\(ny),2") // 2 = move
         }
     }
     
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        lastTouchPoint = nil
-        send(string: "1,2,0,0")
+        guard let touch = touches.first else { return }
+        let loc = touch.location(in: view)
+        let nx = loc.x / view.bounds.width
+        let ny = loc.y / view.bounds.height
+        send(string: "2,\(nx),\(ny),0") // 0 = touch up
     }
     
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
